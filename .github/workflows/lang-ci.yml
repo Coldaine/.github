@@ -90,11 +90,41 @@ permissions:
 
 jobs:
   # ============================================================
+  # FILE PRESENCE DETECTION (PRECHECK)
+  # ============================================================
+  precheck:
+    name: Detect Project Files
+    runs-on: ubuntu-latest
+    outputs:
+      has_rust: ${{ steps.detect.outputs.has_rust }}
+      has_python: ${{ steps.detect.outputs.has_python }}
+    steps:
+      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
+      
+      - name: Detect language files
+        id: detect
+        run: |
+          # Check for Rust files
+          if git ls-files '**/Cargo.toml' | grep -q .; then
+            echo "has_rust=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_rust=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Check for Python files
+          if git ls-files '**/pyproject.toml' '**/requirements.txt' '**/setup.py' | grep -q .; then
+            echo "has_python=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_python=false" >> $GITHUB_OUTPUT
+          fi
+
+  # ============================================================
   # WORKSPACE MEMBER DETECTION
   # ============================================================
   detect-members:
     name: Detect Workspace Members
-    if: inputs.run_rust && hashFiles('**/Cargo.toml') != ''
+    needs: precheck
+    if: inputs.run_rust && needs.precheck.outputs.has_rust == 'true'
     runs-on: ubuntu-latest
     outputs:
       members: ${{ steps.detect.outputs.members }}
@@ -128,8 +158,8 @@ jobs:
   # ============================================================
   rust:
     name: Rust CI - ${{ matrix.member }}
-    needs: detect-members
-    if: inputs.run_rust && hashFiles('**/Cargo.toml') != ''
+    needs: [precheck, detect-members]
+    if: inputs.run_rust && needs.precheck.outputs.has_rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.test_timeout_minutes }}
     continue-on-error: ${{ inputs.continue_on_error }}
@@ -347,7 +377,8 @@ jobs:
   # ============================================================
   rust-msrv:
     name: Rust MSRV Check
-    if: inputs.run_rust && inputs.rust_msrv != '' && hashFiles('**/Cargo.toml') != ''
+    needs: precheck
+    if: inputs.run_rust && inputs.rust_msrv != '' && needs.precheck.outputs.has_rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.test_timeout_minutes }}
     continue-on-error: true
@@ -387,7 +418,8 @@ jobs:
   # ============================================================
   cargo-deny:
     name: Cargo Deny Check
-    if: inputs.run_rust && inputs.run_cargo_deny && hashFiles('**/Cargo.toml') != ''
+    needs: precheck
+    if: inputs.run_rust && inputs.run_cargo_deny && needs.precheck.outputs.has_rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     
@@ -405,7 +437,8 @@ jobs:
   # ============================================================
   dependency-analysis:
     name: Dependency Analysis
-    if: inputs.run_rust && hashFiles('**/Cargo.toml') != ''
+    needs: precheck
+    if: inputs.run_rust && needs.precheck.outputs.has_rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     
@@ -438,7 +471,8 @@ jobs:
   # ============================================================
   python:
     name: Python CI
-    if: inputs.run_python && (hashFiles('**/pyproject.toml') != '' || hashFiles('**/requirements.txt') != '' || hashFiles('**/setup.py') != '')
+    needs: precheck
+    if: inputs.run_python && needs.precheck.outputs.has_python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.test_timeout_minutes }}
     continue-on-error: ${{ inputs.continue_on_error }}
@@ -504,7 +538,8 @@ jobs:
   # ============================================================
   dependency-check:
     name: Dependency Security Check
-    if: (inputs.run_rust && hashFiles('**/Cargo.toml') != '') || (inputs.run_python && hashFiles('**/requirements.txt') != '')
+    needs: precheck
+    if: (inputs.run_rust && needs.precheck.outputs.has_rust == 'true') || (inputs.run_python && needs.precheck.outputs.has_python == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     
