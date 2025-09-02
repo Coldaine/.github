@@ -12,7 +12,8 @@ on:
       workspace-members: { required: false, type: string, default: "" }
       run-cargo-deny: { required: false, type: boolean, default: true }
       install-alsa: { required: false, type: boolean, default: false }
-      install-apt-packages: { required: false, type: string, default: "" }
+  install-apt-packages: { required: false, type: string, default: "" }
+  run-audit: { required: false, type: boolean, default: true }
 permissions:
   contents: read
 env:
@@ -24,7 +25,12 @@ jobs:
       members: ${{ steps.detect.outputs.members }}
       matrix: ${{ steps.detect.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
+      - uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8
+        with:
+          toolchain: stable
+      - name: Ensure jq
+        run: sudo apt-get update && sudo apt-get install -y jq
       - name: Detect workspace members
         id: detect
         run: |
@@ -37,7 +43,7 @@ jobs:
           else
             MEMBERS="."
           fi
-          MATRIX=$(echo $MEMBERS | jq -R -c 'split(" ") | map(select(length > 0)) | {"member": .}')
+          MATRIX=$(printf '%s\n' "$MEMBERS" | jq -R -c 'split(" ") | map(select(length > 0)) | {include: map({member: .})}')
           echo "members=$MEMBERS" >> $GITHUB_OUTPUT
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
@@ -45,26 +51,26 @@ jobs:
     needs: detect-members
     runs-on: ubuntu-latest
     strategy:
-      matrix: ${{ fromJSON(needs.detect-members.outputs.matrix) }}
+  matrix: ${{ fromJSON(needs.detect-members.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8 # pinned
         with:
           toolchain: ${{ inputs.channel }}
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
         with:
           key: ${{ matrix.member }}-${{ inputs.features }}
       - if: inputs.use-sccache
-        uses: mozilla-actions/sccache-action@v0.0.5
+        uses: mozilla-actions/sccache-action@c94e5a96e0ba0fb6816ceae10c4cd8e800724ddd # v0.0.6
       - if: inputs.install-alsa
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - if: inputs.install-apt-packages != ''
         run: sudo apt-get update && sudo apt-get install -y ${{ inputs.install-apt-packages }}
       - if: inputs.use-nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@5ff18d7fb42b9cb96e9b08bd87f965bb411b4daf # v2.44.45
         with:
           tool: cargo-nextest
       - name: Format & Clippy
@@ -138,8 +144,8 @@ jobs:
             FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.features }}"
           fi
           cargo llvm-cov $PACKAGE_ARG --lcov --output-path lcov-${{ matrix.member }}.info $FEATURES_ARG
-      - if: inputs.coverage && always()
-        uses: codecov/codecov-action@v4
+      - if: inputs.coverage && always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
+        uses: codecov/codecov-action@4fe8c5f003fae66aa5ebb77cfd3eaf9f93d6a8dc # v4.5.0
         with:
           files: lcov-${{ matrix.member }}.info
           flags: rust
@@ -148,11 +154,13 @@ jobs:
     if: inputs.msrv != ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with: { toolchain: ${{ inputs.msrv }} }
-      - uses: Swatinem/rust-cache@v2
-        with: { key: msrv-${{ inputs.msrv }} }
+      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
+      - uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8 # pinned
+        with:
+          toolchain: ${{ inputs.msrv }}
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
+        with:
+          key: msrv-${{ inputs.msrv }}
       - if: inputs.install-alsa
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - if: inputs.install-apt-packages != ''
@@ -166,8 +174,19 @@ jobs:
     if: inputs.run-cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
+      - uses: EmbarkStudios/cargo-deny-action@8371184bd11e21dcf8ac82ebf8c9c9f74ebf7268 # v2.0.1
         with:
           command: check all
           arguments: --workspace
+
+  cargo-audit:
+    if: inputs.run-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
+      - uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8
+      - name: Security audit (rustsec)
+        uses: rustsec/audit-check@dd51754611baa5c0affe6c19adb60f61f165e6e4 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
