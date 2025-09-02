@@ -47,40 +47,58 @@ This repository provides a centralized, reusable GitHub Actions workflow that st
 Coldaine/.github/
 ├── .github/
 │   └── workflows/
-│       └── lang-ci.yml    # Main reusable workflow (521 lines)
-└── README.md              # Repository documentation
+│       ├── lang-ci.yml                    # Router workflow (triggers on push/PR)
+│       └── reusable/
+│           ├── python-ci.yml              # Reusable Python CI workflow
+│           └── rust-ci.yml                # Reusable Rust CI workflow
+├── Reusable_Workflow_Design.md           # This design document
+└── README.md                              # Repository documentation
 ```
 
 ## Workflow Jobs
 
-### 1. **File Presence Detection** (`precheck`)
-- Runs first to detect project type on a runner
-- Checks for Rust (Cargo.toml) and Python files
-- Outputs flags used by downstream jobs
-- Avoids `hashFiles()` limitations in reusable workflows
+### Router Workflow (`lang-ci.yml`)
 
-### 2. **Workspace Member Detection** (`detect-members`)
-- Automatically discovers Rust workspace members
-- Creates a matrix for parallel testing
-- Supports manual member specification
-- Depends on precheck for file presence
+#### 1. **Path-based Detection** (`detect`)
+- Uses `dorny/paths-filter` for efficient file change detection
+- Checks for Python and Rust related files
+- Outputs boolean flags for language presence
+- Enables smart-skipping of irrelevant CI jobs
 
-### 3. **Rust CI** (`rust`)
+#### 2. **Python CI** (`python`)
+- Conditionally calls `reusable/python-ci.yml` if Python files detected
+- Passes configurable inputs for Python-specific settings
+- Includes per-job concurrency control
+
+#### 3. **Rust CI** (`rust`)  
+- Conditionally calls `reusable/rust-ci.yml` if Rust files detected
+- Passes extensive Rust configuration options
+- Includes per-job concurrency control
+
+### Reusable Python Workflow (`reusable/python-ci.yml`)
+
+#### 1. **Python CI** (`py`)
+- Matrix testing across multiple Python versions
+- Auto-detects package managers (uv, poetry, pdm, pip)
+- Runs linting, type checking, testing, coverage, and security checks
+- Configurable steps with input toggles
+
+### Reusable Rust Workflow (`reusable/rust-ci.yml`)
+
+#### 1. **Workspace Member Detection** (`detect-members`)
+- Discovers Rust workspace members for parallel testing
+- Creates matrix for per-crate jobs
+
+#### 2. **Rust CI** (`rust`)
 - Per-crate parallel testing with matrix strategy
-- Full CI pipeline: format, clippy, build, test, doc generation
-- Configurable feature testing and MSRV checks
-- System dependency management per crate
+- Full CI pipeline: format, clippy, build, test, coverage
+- Configurable toolchain, features, and dependencies
 
-### 4. **Python CI** (`python`)
-- Modern Python tooling with ruff and pytest
-- Type checking with mypy
-- Security scanning with bandit
-- Coverage reporting
+#### 3. **Rust MSRV** (`rust-msrv`)
+- Optional MSRV testing with minimal features
 
-### 5. **Security & Dependencies**
-- **cargo-deny:** License compliance and vulnerability checks
-- **dependency-analysis:** Duplicate detection and security audits  
-- **dependency-check:** Trivy scanning for both languages
+#### 4. **Cargo Deny** (`cargo-deny`)
+- License compliance and security checks
 
 ## Configuration Options
 

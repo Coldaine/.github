@@ -1,0 +1,173 @@
+name: Rust CI
+on:
+  workflow_call:
+    inputs:
+      channel:    { required: false, type: string,  default: "stable" }
+      use-nextest:{ required: false, type: boolean, default: true }
+      coverage:   { required: false, type: boolean, default: true }
+      use-sccache:{ required: false, type: boolean, default: false }
+      msrv:       { required: false, type: string,  default: "" }
+      features:   { required: false, type: string,  default: "" }
+      no-default-features: { required: false, type: boolean, default: false }
+      workspace-members: { required: false, type: string, default: "" }
+      run-cargo-deny: { required: false, type: boolean, default: true }
+      install-alsa: { required: false, type: boolean, default: false }
+      install-apt-packages: { required: false, type: string, default: "" }
+permissions:
+  contents: read
+env:
+  RUSTFLAGS: -D warnings
+jobs:
+  detect-members:
+    runs-on: ubuntu-latest
+    outputs:
+      members: ${{ steps.detect.outputs.members }}
+      matrix: ${{ steps.detect.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect workspace members
+        id: detect
+        run: |
+          if [ -n "${{ inputs.workspace-members }}" ]; then
+            MEMBERS="${{ inputs.workspace-members }}"
+          elif [ -f "Cargo.toml" ] && grep -q "\[workspace\]" Cargo.toml; then
+            MEMBERS=$(cargo metadata --no-deps --format-version 1 | \
+              jq -r '.workspace_members[] | split(" ")[0] | split("/")[-1]' | \
+              tr '\n' ' ')
+          else
+            MEMBERS="."
+          fi
+          MATRIX=$(echo $MEMBERS | jq -R -c 'split(" ") | map(select(length > 0)) | {"member": .}')
+          echo "members=$MEMBERS" >> $GITHUB_OUTPUT
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  rust:
+    needs: detect-members
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.detect-members.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.channel }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.member }}-${{ inputs.features }}
+      - if: inputs.use-sccache
+        uses: mozilla-actions/sccache-action@v0.0.5
+      - if: inputs.install-alsa
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - if: inputs.install-apt-packages != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ inputs.install-apt-packages }}
+      - if: inputs.use-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Format & Clippy
+        run: |
+          PACKAGE_ARG=""
+          if [ "${{ matrix.member }}" != "." ]; then
+            PACKAGE_ARG="-p ${{ matrix.member }}"
+          else
+            PACKAGE_ARG="--workspace"
+          fi
+          FEATURES_ARG=""
+          if [ "${{ inputs.no-default-features }}" = "true" ]; then
+            FEATURES_ARG="--no-default-features"
+          fi
+          if [ -n "${{ inputs.features }}" ]; then
+            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.features }}"
+          fi
+          cargo fmt $PACKAGE_ARG -- --check
+          cargo clippy $PACKAGE_ARG --all-targets $FEATURES_ARG -- -D warnings
+      - name: Build
+        run: |
+          PACKAGE_ARG=""
+          if [ "${{ matrix.member }}" != "." ]; then
+            PACKAGE_ARG="-p ${{ matrix.member }}"
+          else
+            PACKAGE_ARG="--workspace"
+          fi
+          FEATURES_ARG=""
+          if [ "${{ inputs.no-default-features }}" = "true" ]; then
+            FEATURES_ARG="--no-default-features"
+          fi
+          if [ -n "${{ inputs.features }}" ]; then
+            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.features }}"
+          fi
+          cargo build $PACKAGE_ARG --all-targets --locked $FEATURES_ARG
+      - name: Test
+        run: |
+          PACKAGE_ARG=""
+          if [ "${{ matrix.member }}" != "." ]; then
+            PACKAGE_ARG="-p ${{ matrix.member }}"
+          else
+            PACKAGE_ARG="--workspace"
+          fi
+          FEATURES_ARG=""
+          if [ "${{ inputs.no-default-features }}" = "true" ]; then
+            FEATURES_ARG="--no-default-features"
+          fi
+          if [ -n "${{ inputs.features }}" ]; then
+            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.features }}"
+          fi
+          if ${{ inputs.use-nextest }}; then
+            cargo nextest run $PACKAGE_ARG --locked $FEATURES_ARG
+          else
+            cargo test $PACKAGE_ARG --locked $FEATURES_ARG -- --nocapture
+          fi
+      - if: inputs.coverage
+        name: Coverage (llvm-cov)
+        run: |
+          cargo install cargo-llvm-cov --locked || true
+          PACKAGE_ARG=""
+          if [ "${{ matrix.member }}" != "." ]; then
+            PACKAGE_ARG="-p ${{ matrix.member }}"
+          else
+            PACKAGE_ARG="--workspace"
+          fi
+          FEATURES_ARG=""
+          if [ "${{ inputs.no-default-features }}" = "true" ]; then
+            FEATURES_ARG="--no-default-features"
+          fi
+          if [ -n "${{ inputs.features }}" ]; then
+            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.features }}"
+          fi
+          cargo llvm-cov $PACKAGE_ARG --lcov --output-path lcov-${{ matrix.member }}.info $FEATURES_ARG
+      - if: inputs.coverage && always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov-${{ matrix.member }}.info
+          flags: rust
+
+  rust-msrv:
+    if: inputs.msrv != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: ${{ inputs.msrv }} }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: msrv-${{ inputs.msrv }} }
+      - if: inputs.install-alsa
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - if: inputs.install-apt-packages != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ inputs.install-apt-packages }}
+      - name: Build with MSRV
+        run: cargo build --workspace --locked --no-default-features
+      - name: Test with MSRV
+        run: cargo test --workspace --locked --no-default-features
+
+  cargo-deny:
+    if: inputs.run-cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check all
+          arguments: --workspace

@@ -1,556 +1,142 @@
-name: Common CI
-
+name: Lang CI (router)
 on:
-  workflow_call:
+  pull_request:
+  push:
+  workflow_dispatch:
     inputs:
-      # Language toggles
-      run_rust:
-        description: "Run Rust CI jobs"
+      python-versions:
+        description: "Python versions to test"
+        type: string
+        default: '["3.10","3.11","3.12"]'
+      pkg-manager:
+        description: "Package manager (auto|uv|pip|poetry|pdm)"
+        type: string
+        default: "auto"
+      python-lint:
+        description: "Run Python linting"
         type: boolean
         default: true
-      run_python:
-        description: "Run Python CI jobs"
+      python-typecheck:
+        description: "Run Python type checking"
         type: boolean
-        default: false
-      
-      # Rust configuration
-      rust_toolchain:
-        description: "Rust toolchain (stable/beta/nightly)"
+        default: true
+      python-coverage:
+        description: "Run Python coverage"
+        type: boolean
+        default: true
+      python-security-check:
+        description: "Run Python security check"
+        type: boolean
+        default: true
+      rust-channel:
+        description: "Rust toolchain channel"
         type: string
         default: "stable"
-      rust_msrv:
-        description: "Minimum Supported Rust Version (e.g., 1.70.0)"
-        type: string
-        default: ""
-      rust_features:
-        description: "Space-separated Cargo features"
-        type: string
-        default: ""
-      rust_no_default_features:
-        description: "Pass --no-default-features to cargo"
-        type: boolean
-        default: false
-      rust_workspace_members:
-        description: "Space-separated workspace members to test (empty = all)"
-        type: string
-        default: ""
-      
-      # Python configuration
-      python_version:
-        description: "Python version (e.g., 3.11)"
-        type: string
-        default: "3.11"
-      python_requirements:
-        description: "Path to requirements file"
-        type: string
-        default: "requirements.txt"
-      
-      # System dependencies
-      install_alsa:
-        description: "Install ALSA audio libraries (Linux)"
-        type: boolean
-        default: false
-      install_apt_packages:
-        description: "Space-separated apt packages to install"
-        type: string
-        default: ""
-      crate_system_deps:
-        description: "JSON mapping crate names to system deps (e.g., {\"coldvox-audio\": \"libasound2-dev\"})"
-        type: string
-        default: "{}"
-      
-      # Testing configuration
-      test_timeout_minutes:
-        description: "Test timeout in minutes"
-        type: number
-        default: 30
-      continue_on_error:
-        description: "Continue workflow even if tests fail"
-        type: boolean
-        default: false
-      use_nextest:
-        description: "Use cargo-nextest for faster test execution"
-        type: boolean
-        default: false
-      use_sccache:
-        description: "Use sccache for build caching"
-        type: boolean
-        default: false
-      run_cargo_deny:
-        description: "Run cargo-deny for license/security checks"
+      rust-use-nextest:
+        description: "Use cargo-nextest"
         type: boolean
         default: true
-      max_parallel:
-        description: "Maximum parallel jobs in matrix (0 = unlimited)"
-        type: number
-        default: 0
+      rust-coverage:
+        description: "Run Rust coverage"
+        type: boolean
+        default: true
+      rust-use-sccache:
+        description: "Use sccache"
+        type: boolean
+        default: false
+      rust-msrv:
+        description: "Minimum Supported Rust Version"
+        type: string
+        default: ""
+      rust-features:
+        description: "Cargo features"
+        type: string
+        default: ""
+      rust-no-default-features:
+        description: "No default features"
+        type: boolean
+        default: false
+      rust-workspace-members:
+        description: "Workspace members"
+        type: string
+        default: ""
+      rust-run-cargo-deny:
+        description: "Run cargo-deny"
+        type: boolean
+        default: true
+      rust-install-alsa:
+        description: "Install ALSA"
+        type: boolean
+        default: false
+      rust-install-apt-packages:
+        description: "APT packages to install"
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  # ============================================================
-  # FILE PRESENCE DETECTION (PRECHECK)
-  # ============================================================
-  precheck:
-    name: Detect Project Files
+  detect:
     runs-on: ubuntu-latest
     outputs:
-      has_rust: ${{ steps.detect.outputs.has_rust }}
-      has_python: ${{ steps.detect.outputs.has_python }}
+      has_python: ${{ steps.f.outputs.python }}
+      has_rust: ${{ steps.f.outputs.rust }}
     steps:
-      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
-      
-      - name: Detect language files
-        id: detect
-        run: |
-          # Check for Rust files
-          if git ls-files '**/Cargo.toml' | grep -q .; then
-            echo "has_rust=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_rust=false" >> $GITHUB_OUTPUT
-          fi
-          
-          # Check for Python files
-          if git ls-files '**/pyproject.toml' '**/requirements.txt' '**/setup.py' | grep -q .; then
-            echo "has_python=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_python=false" >> $GITHUB_OUTPUT
-          fi
-
-  # ============================================================
-  # WORKSPACE MEMBER DETECTION
-  # ============================================================
-  detect-members:
-    name: Detect Workspace Members
-    needs: precheck
-    if: inputs.run_rust && needs.precheck.outputs.has_rust == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      members: ${{ steps.detect.outputs.members }}
-      matrix: ${{ steps.detect.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
-      
-      - name: Detect workspace members
-        id: detect
-        run: |
-          if [ -n "${{ inputs.rust_workspace_members }}" ]; then
-            # Use provided members
-            MEMBERS="${{ inputs.rust_workspace_members }}"
-          elif [ -f "Cargo.toml" ] && grep -q "\[workspace\]" Cargo.toml; then
-            # Auto-detect from cargo metadata
-            MEMBERS=$(cargo metadata --no-deps --format-version 1 | \
-              jq -r '.workspace_members[] | split(" ")[0] | split("/")[-1]' | \
-              tr '\n' ' ')
-          else
-            # Single package project
-            MEMBERS="."
-          fi
-          
-          # Create matrix JSON
-          MATRIX=$(echo $MEMBERS | jq -R -c 'split(" ") | map(select(length > 0)) | {"member": .}')
-          echo "members=$MEMBERS" >> $GITHUB_OUTPUT
-          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
-
-  # ============================================================
-  # RUST CI JOB (PER-CRATE MATRIX)
-  # ============================================================
-  rust:
-    name: Rust CI - ${{ matrix.member }}
-    needs: [precheck, detect-members]
-    if: inputs.run_rust && needs.precheck.outputs.has_rust == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.test_timeout_minutes }}
-    continue-on-error: ${{ inputs.continue_on_error }}
-    strategy:
-      matrix: ${{ fromJSON(needs.detect-members.outputs.matrix) }}
-      max-parallel: ${{ inputs.max_parallel > 0 && inputs.max_parallel || 999 }}
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
-        with:
-          fetch-depth: 0
-      
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8 # v1
-        with:
-          toolchain: ${{ inputs.rust_toolchain }}
-          components: clippy, rustfmt
-      
-      - name: Setup sccache
-        if: inputs.use_sccache
-        uses: mozilla-actions/sccache-action@c94e5a96e0ba0fb6816ceae10c4cd8e800724ddd # v0.0.6
-      
-      - name: Configure sccache
-        if: inputs.use_sccache
-        run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-      
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
-        with:
-          key: ${{ matrix.member }}-${{ inputs.rust_features }}
-      
-      - name: Install ALSA libraries
-        if: inputs.install_alsa
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev
-      
-      - name: Install additional apt packages
-        if: inputs.install_apt_packages != ''
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ inputs.install_apt_packages }}
-      
-      - name: Install crate-specific system dependencies
-        if: inputs.crate_system_deps != '{}'
-        run: |
-          DEPS=$(echo '${{ inputs.crate_system_deps }}' | jq -r '."${{ matrix.member }}" // ""')
-          if [ -n "$DEPS" ]; then
-            sudo apt-get update
-            sudo apt-get install -y $DEPS
-          fi
-      
-      - name: Install cargo-nextest
-        if: inputs.use_nextest
-        uses: taiki-e/install-action@5ff18d7fb42b9cb96e9b08bd87f965bb411b4daf # v2.44.45
-        with:
-          tool: cargo-nextest
-      
-      - name: Check formatting
-        run: |
-          if [ "${{ matrix.member }}" = "." ]; then
-            cargo fmt --all -- --check
-          else
-            cargo fmt -p ${{ matrix.member }} -- --check
-          fi
-      
-      - name: Verify lockfile
-        run: |
-          cargo check --locked --workspace
-          if git diff --exit-code Cargo.lock; then
-            echo "Lockfile is up to date"
-          else
-            echo "::error::Cargo.lock is out of date. Run 'cargo update' locally and commit."
-            exit 1
-          fi
-      
-      - name: Run Clippy
-        run: |
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          
-          FEATURES_ARG=""
-          if [ "${{ inputs.rust_no_default_features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.rust_features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.rust_features }}"
-          fi
-          cargo clippy $PACKAGE_ARG --all-targets $FEATURES_ARG -- -D warnings
-      
-      - name: Build
-        run: |
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          
-          FEATURES_ARG=""
-          if [ "${{ inputs.rust_no_default_features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.rust_features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.rust_features }}"
-          fi
-          cargo build $PACKAGE_ARG --all-targets --locked $FEATURES_ARG
-      
-      - name: Run tests
-        run: |
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          
-          FEATURES_ARG=""
-          if [ "${{ inputs.rust_no_default_features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.rust_features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.rust_features }}"
-          fi
-          
-          if [ "${{ inputs.use_nextest }}" = "true" ]; then
-            cargo nextest run $PACKAGE_ARG --locked $FEATURES_ARG
-          else
-            cargo test $PACKAGE_ARG --locked $FEATURES_ARG -- --nocapture
-          fi
-      
-      - name: Run doc tests
-        run: |
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          
-          FEATURES_ARG=""
-          if [ "${{ inputs.rust_no_default_features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.rust_features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.rust_features }}"
-          fi
-          
-          cargo test --doc $PACKAGE_ARG --locked $FEATURES_ARG
-      
-      - name: Generate documentation
-        run: |
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          
-          FEATURES_ARG=""
-          if [ "${{ inputs.rust_no_default_features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.rust_features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.rust_features }}"
-          fi
-          
-          RUSTDOCFLAGS="-D warnings" cargo doc $PACKAGE_ARG --no-deps --locked $FEATURES_ARG
-      
-      - name: Check examples
-        run: |
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          
-          FEATURES_ARG=""
-          if [ "${{ inputs.rust_no_default_features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.rust_features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.rust_features }}"
-          fi
-          
-          cargo check $PACKAGE_ARG --examples --locked $FEATURES_ARG || true
-      
-      - name: Check package metadata
-        run: |
-          if [ "${{ matrix.member }}" != "." ]; then
-            cargo package -p ${{ matrix.member }} --no-verify --allow-dirty || true
-          fi
-      
-      - name: Upload artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
-        with:
-          name: failure-artifacts-${{ matrix.member }}
-          path: |
-            target/debug/deps/*.log
-            **/*.log
-            **/test-output/
-          retention-days: 7
-
-  # ============================================================
-  # RUST MSRV JOB
-  # ============================================================
-  rust-msrv:
-    name: Rust MSRV Check
-    needs: precheck
-    if: inputs.run_rust && inputs.rust_msrv != '' && needs.precheck.outputs.has_rust == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.test_timeout_minutes }}
-    continue-on-error: true
-    
-    steps:
-      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
-      
-      - name: Install MSRV toolchain
-        uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8 # v1
-        with:
-          toolchain: ${{ inputs.rust_msrv }}
-      
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
-        with:
-          key: msrv-${{ inputs.rust_msrv }}
-      
-      - name: Install system dependencies
-        if: inputs.install_alsa || inputs.install_apt_packages != ''
-        run: |
-          sudo apt-get update
-          if [ "${{ inputs.install_alsa }}" = "true" ]; then
-            sudo apt-get install -y libasound2-dev
-          fi
-          if [ -n "${{ inputs.install_apt_packages }}" ]; then
-            sudo apt-get install -y ${{ inputs.install_apt_packages }}
-          fi
-      
-      - name: Build with MSRV
-        run: cargo build --workspace --locked --no-default-features
-      
-      - name: Test with MSRV
-        run: cargo test --workspace --locked --no-default-features
-
-  # ============================================================
-  # CARGO DENY JOB
-  # ============================================================
-  cargo-deny:
-    name: Cargo Deny Check
-    needs: precheck
-    if: inputs.run_rust && inputs.run_cargo_deny && needs.precheck.outputs.has_rust == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    
-    steps:
-      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
-      
-      - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@8371184bd11e21dcf8ac82ebf8c9c9f74ebf7268 # v2.0.1
-        with:
-          command: check all
-          arguments: --workspace
-
-  # ============================================================
-  # DEPENDENCY ANALYSIS JOB
-  # ============================================================
-  dependency-analysis:
-    name: Dependency Analysis
-    needs: precheck
-    if: inputs.run_rust && needs.precheck.outputs.has_rust == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    
-    steps:
-      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
-      
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8 # v1
-        with:
-          toolchain: stable
-      
-      - name: Check for duplicate dependencies
-        run: |
-          cargo tree --workspace --duplicates --locked
-      
-      - name: Security audit
-        uses: rustsec/audit-check@dd51754611baa5c0affe6c19adb60f61f165e6e4 # v2.0.0
+      - uses: actions/checkout@v4
+      - id: f
+        uses: dorny/paths-filter@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Check minimal versions (nightly)
-        continue-on-error: true
-        run: |
-          rustup toolchain install nightly
-          cargo +nightly update -Z minimal-versions
-          cargo +nightly build --workspace --all-targets || true
+          filters: |
+            python:
+              - 'pyproject.toml'
+              - '**/*.py'
+              - 'requirements*.txt'
+              - 'poetry.lock'
+              - 'uv.lock'
+            rust:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '**/*.rs'
 
-  # ============================================================
-  # PYTHON CI JOB
-  # ============================================================
   python:
-    name: Python CI
-    needs: precheck
-    if: inputs.run_python && needs.precheck.outputs.has_python == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.test_timeout_minutes }}
-    continue-on-error: ${{ inputs.continue_on_error }}
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
-        with:
-          fetch-depth: 0
-      
-      - name: Setup Python
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
-        with:
-          python-version: ${{ inputs.python_version }}
-          cache: 'pip'
-      
-      - name: Install additional apt packages
-        if: inputs.install_apt_packages != ''
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ inputs.install_apt_packages }}
-      
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # Try multiple common dependency files
-          if [ -f "${{ inputs.python_requirements }}" ]; then
-            pip install -r "${{ inputs.python_requirements }}"
-          elif [ -f "requirements.txt" ]; then
-            pip install -r requirements.txt
-          fi
-          if [ -f "pyproject.toml" ]; then
-            pip install -e .
-          elif [ -f "setup.py" ]; then
-            pip install -e .
-          fi
-          # Install common CI tools
-          pip install ruff pytest pytest-cov
-      
-      - name: Format check with ruff
-        run: ruff format --check .
-      
-      - name: Lint with ruff
-        run: ruff check .
-      
-      - name: Type check with mypy
-        run: |
-          pip install mypy
-          mypy . || true  # Don't fail on type errors initially
-        continue-on-error: true
-      
-      - name: Run tests with pytest
-        run: pytest -v --cov=. --cov-report=term-missing
-      
-      - name: Security check with bandit
-        run: |
-          pip install bandit[toml]
-          bandit -r . -ll || true  # Low severity, don't fail initially
-        continue-on-error: true
+    if: needs.detect.outputs.has_python == 'true'
+    needs: detect
+    uses: ./.github/workflows/reusable/python-ci.yml
+    concurrency:
+      group: ${{ github.workflow }}-python-${{ github.ref }}
+      cancel-in-progress: true
+    with:
+      python-versions: ${{ github.event.inputs.python-versions || '["3.10","3.11","3.12"]' }}
+      pkg-manager: ${{ github.event.inputs.pkg-manager || 'auto' }}
+      lint: ${{ github.event.inputs.python-lint == 'true' }}
+      typecheck: ${{ github.event.inputs.python-typecheck == 'true' }}
+      coverage: ${{ github.event.inputs.python-coverage == 'true' }}
+      security-check: ${{ github.event.inputs.python-security-check == 'true' }}
+    secrets: inherit
 
-  # ============================================================
-  # DEPENDENCY CHECK JOB (Both Languages)
-  # ============================================================
-  dependency-check:
-    name: Dependency Security Check
-    needs: precheck
-    if: (inputs.run_rust && needs.precheck.outputs.has_rust == 'true') || (inputs.run_python && needs.precheck.outputs.has_python == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
-      
-      - name: Run Trivy security scanner
-        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8 # v0.24.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '0'  # Don't fail the build initially
+  rust:
+    if: needs.detect.outputs.has_rust == 'true'
+    needs: detect
+    uses: ./.github/workflows/reusable/rust-ci.yml
+    concurrency:
+      group: ${{ github.workflow }}-rust-${{ github.ref }}
+      cancel-in-progress: true
+    with:
+      channel: ${{ github.event.inputs.rust-channel || 'stable' }}
+      use-nextest: ${{ github.event.inputs.rust-use-nextest == 'true' }}
+      coverage: ${{ github.event.inputs.rust-coverage == 'true' }}
+      use-sccache: ${{ github.event.inputs.rust-use-sccache == 'true' }}
+      msrv: ${{ github.event.inputs.rust-msrv || '' }}
+      features: ${{ github.event.inputs.rust-features || '' }}
+      no-default-features: ${{ github.event.inputs.rust-no-default-features == 'true' }}
+      workspace-members: ${{ github.event.inputs.rust-workspace-members || '' }}
+      run-cargo-deny: ${{ github.event.inputs.rust-run-cargo-deny == 'true' }}
+      install-alsa: ${{ github.event.inputs.rust-install-alsa == 'true' }}
+      install-apt-packages: ${{ github.event.inputs.rust-install-apt-packages || '' }}
+    secrets: inherit

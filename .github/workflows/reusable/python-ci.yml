@@ -1,0 +1,72 @@
+name: Python CI
+on:
+  workflow_call:
+    inputs:
+      python-versions: { required: false, type: string, default: '["3.12"]' }
+      pkg-manager:     { required: false, type: string, default: "auto" }
+      lint:            { required: false, type: boolean, default: true }
+      typecheck:       { required: false, type: boolean, default: true }
+      coverage:        { required: false, type: boolean, default: true }
+      security-check:  { required: false, type: boolean, default: true }
+permissions:
+  contents: read
+jobs:
+  py:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(inputs.python-versions) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.version }}
+          cache: 'pip'
+      - name: Install deps (auto-detect manager)
+        run: |
+          set -e
+          if [[ "${{ inputs.pkg-manager }}" == "uv" ]] || [[ -f "uv.lock" ]]; then
+            pip install uv
+            uv sync --frozen
+          elif [[ -f "poetry.lock" ]]; then
+            pip install poetry
+            poetry install --no-interaction --no-root
+          elif [[ -f "pdm.lock" ]]; then
+            pip install pdm
+            pdm install
+          elif compgen -G "requirements*.txt" > /dev/null; then
+            python -m pip install -r requirements.txt
+          else
+            python -m pip install -e .[test] || true
+          fi
+      - if: inputs.lint
+        name: Lint with ruff
+        run: |
+          python -m pip install ruff
+          ruff check .
+          ruff format --check .
+      - if: inputs.typecheck
+        name: Type check with mypy
+        run: |
+          python -m pip install mypy
+          mypy . || true
+      - name: Run tests
+        run: |
+          python -m pip install pytest pytest-xdist pytest-cov
+          pytest -n auto --maxfail=1 --cov --cov-report=term-missing
+      - if: inputs.coverage
+        name: Generate coverage
+        run: coverage xml -o coverage.xml || true
+      - if: inputs.coverage && always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          flags: python
+      - if: inputs.security-check
+        name: Security check
+        run: |
+          python -m pip install bandit[toml]
+          bandit -r . -ll || true
