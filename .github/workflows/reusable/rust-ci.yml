@@ -12,8 +12,8 @@ on:
       workspace-members: { required: false, type: string, default: "" }
       run-cargo-deny: { required: false, type: boolean, default: true }
       install-alsa: { required: false, type: boolean, default: false }
-  install-apt-packages: { required: false, type: string, default: "" }
-  run-audit: { required: false, type: boolean, default: true }
+      install-apt-packages: { required: false, type: string, default: "" }
+      run-audit: { required: false, type: boolean, default: true }
 permissions:
   contents: read
 env:
@@ -29,8 +29,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8
         with:
           toolchain: stable
-      - name: Ensure jq
-        run: sudo apt-get update && sudo apt-get install -y jq
       - name: Detect workspace members
         id: detect
         run: |
@@ -43,6 +41,7 @@ jobs:
           else
             MEMBERS="."
           fi
+          # Convert space-separated string to a JSON matrix for the strategy context.
           MATRIX=$(printf '%s\n' "$MEMBERS" | jq -R -c 'split(" ") | map(select(length > 0)) | {include: map({member: .})}')
           echo "members=$MEMBERS" >> $GITHUB_OUTPUT
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
@@ -73,77 +72,43 @@ jobs:
         uses: taiki-e/install-action@5ff18d7fb42b9cb96e9b08bd87f965bb411b4daf # v2.44.45
         with:
           tool: cargo-nextest
+      - name: Prepare cargo arguments
+        id: prep_args
+        run: |
+          PACKAGE_ARG=""
+          if [ "${{ matrix.member }}" != "." ]; then
+            PACKAGE_ARG="-p ${{ matrix.member }}"
+          else
+            PACKAGE_ARG="--workspace"
+          fi
+          echo "PACKAGE_ARG=${PACKAGE_ARG}" >> $GITHUB_ENV
+
+          FEATURES_ARG=""
+          if [ "${{ inputs.no-default-features }}" = "true" ]; then
+            FEATURES_ARG="--no-default-features"
+          fi
+          if [ -n "${{ inputs.features }}" ]; then
+            FEATURES_ARG="${FEATURES_ARG} --features '${{ inputs.features }}'"
+          fi
+          echo "FEATURES_ARG=${FEATURES_ARG}" >> $GITHUB_ENV
       - name: Format & Clippy
         run: |
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          FEATURES_ARG=""
-          if [ "${{ inputs.no-default-features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.features }}"
-          fi
-          cargo fmt $PACKAGE_ARG -- --check
-          cargo clippy $PACKAGE_ARG --all-targets $FEATURES_ARG -- -D warnings
+          cargo fmt ${{ env.PACKAGE_ARG }} -- --check
+          cargo clippy ${{ env.PACKAGE_ARG }} --all-targets ${{ env.FEATURES_ARG }} -- -D warnings
       - name: Build
-        run: |
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          FEATURES_ARG=""
-          if [ "${{ inputs.no-default-features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.features }}"
-          fi
-          cargo build $PACKAGE_ARG --all-targets --locked $FEATURES_ARG
+        run: cargo build ${{ env.PACKAGE_ARG }} --all-targets --locked ${{ env.FEATURES_ARG }}
       - name: Test
         run: |
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          FEATURES_ARG=""
-          if [ "${{ inputs.no-default-features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.features }}"
-          fi
           if ${{ inputs.use-nextest }}; then
-            cargo nextest run $PACKAGE_ARG --locked $FEATURES_ARG
+            cargo nextest run ${{ env.PACKAGE_ARG }} --locked ${{ env.FEATURES_ARG }}
           else
-            cargo test $PACKAGE_ARG --locked $FEATURES_ARG -- --nocapture
+            cargo test ${{ env.PACKAGE_ARG }} --locked ${{ env.FEATURES_ARG }} -- --nocapture
           fi
       - if: inputs.coverage
         name: Coverage (llvm-cov)
         run: |
-          cargo install cargo-llvm-cov --locked || true
-          PACKAGE_ARG=""
-          if [ "${{ matrix.member }}" != "." ]; then
-            PACKAGE_ARG="-p ${{ matrix.member }}"
-          else
-            PACKAGE_ARG="--workspace"
-          fi
-          FEATURES_ARG=""
-          if [ "${{ inputs.no-default-features }}" = "true" ]; then
-            FEATURES_ARG="--no-default-features"
-          fi
-          if [ -n "${{ inputs.features }}" ]; then
-            FEATURES_ARG="$FEATURES_ARG --features ${{ inputs.features }}"
-          fi
-          cargo llvm-cov $PACKAGE_ARG --lcov --output-path lcov-${{ matrix.member }}.info $FEATURES_ARG
+          cargo install cargo-llvm-cov --locked
+          cargo llvm-cov ${{ env.PACKAGE_ARG }} --lcov --output-path lcov-${{ matrix.member }}.info ${{ env.FEATURES_ARG }}
       - if: inputs.coverage && always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
         uses: codecov/codecov-action@4fe8c5f003fae66aa5ebb77cfd3eaf9f93d6a8dc # v4.5.0
         with:

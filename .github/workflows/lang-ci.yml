@@ -1,3 +1,4 @@
+
 name: Lang CI (router)
 
 on:
@@ -25,6 +26,10 @@ on:
         description: Generate Python coverage + upload
         type: boolean
         default: true
+      python-security-check:
+        description: Run Python security checks
+        type: boolean
+        default: true
       rust-channel:
         description: Rust toolchain channel
         type: string
@@ -43,6 +48,30 @@ on:
         default: ""
       rust-features:
         description: Cargo features (optional)
+        type: string
+        default: ""
+      rust-use-sccache:
+        description: Use sccache for Rust builds
+        type: boolean
+        default: false
+      rust-no-default-features:
+        description: Disable default features
+        type: boolean
+        default: false
+      rust-workspace-members:
+        description: Specific workspace members to test
+        type: string
+        default: ""
+      rust-run-cargo-deny:
+        description: Run cargo-deny checks
+        type: boolean
+        default: true
+      rust-install-alsa:
+        description: Install ALSA libraries
+        type: boolean
+        default: false
+      rust-install-apt-packages:
+        description: Additional apt packages to install
         type: string
         default: ""
 
@@ -89,14 +118,14 @@ jobs:
           filters: |
             python:
               - 'pyproject.toml'
-              - '/.py'
+              - '**/*.py'
               - 'requirements.txt'
               - 'poetry.lock'
               - 'uv.lock'
             rust:
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - '/*.rs'
+              - '**/*.rs'
 
   python:
     if: needs.detect.outputs.has_python == 'true'
@@ -106,32 +135,33 @@ jobs:
       group: ${{ github.workflow }}-python-${{ github.ref }}
       cancel-in-progress: true
     with:
-      python-versions: ${{ (github.event_name == 'workflow_call' && inputs['python-versions']) || github.event.inputs['python-versions'] || '["3.10","3.11","3.12"]' }}
-      pkg-manager: ${{ (github.event_name == 'workflow_call' && inputs['pkg-manager']) || github.event.inputs['pkg-manager'] || 'auto' }}
-      lint: ${{ (github.event_name == 'workflow_call' && inputs['python-lint']) || (github.event.inputs['python-lint'] != 'false') }}
-      typecheck: ${{ (github.event_name == 'workflow_call' && inputs['python-typecheck'])|| (github.event.inputs['python-typecheck']!= 'false') }}
-      coverage: ${{ (github.event_name == 'workflow_call' && inputs['python-coverage']) || (github.event.inputs['python-coverage'] != 'false') }}
-      # Default security-check to true unless explicitly disabled when called via workflow_call.
-      security-check: ${{ (github.event_name == 'workflow_call' && inputs['python-security-check']) || (github.event_name != 'workflow_call' && true) }}
+      python-versions: ${{ inputs.python-versions || '["3.10","3.11","3.12"]' }}
+      pkg-manager: ${{ inputs.pkg-manager || 'auto' }}
+      lint: ${{ inputs.python-lint }}
+      typecheck: ${{ inputs.python-typecheck }}
+      coverage: ${{ inputs.python-coverage }}
+      security-check: ${{ inputs.python-security-check }}
+      pip-audit: ${{ inputs.python-security-check }}  # Use same default as security-check
     secrets: inherit
 
   rust:
     if: needs.detect.outputs.has_rust == 'true'
     needs: detect
-    uses: rust-ci.yml
+    uses: ./.github/workflows/reusable/rust-ci.yml
     concurrency:
       group: ${{ github.workflow }}-rust-${{ github.ref }}
       cancel-in-progress: true
     with:
-      channel: ${{ (github.event_name == 'workflow_call' && inputs['rust-channel']) || github.event.inputs['rust-channel'] || 'stable' }}
-      use-nextest: ${{ (github.event_name == 'workflow_call' && inputs['rust-use-nextest']) || (github.event.inputs['rust-use-nextest'] != 'false') }}
-      coverage: ${{ (github.event_name == 'workflow_call' && inputs['rust-coverage']) || (github.event.inputs['rust-coverage'] != 'false') }}
-      use-sccache: ${{ (github.event_name == 'workflow_call' && inputs['rust-use-sccache']) || (github.event.inputs['rust-use-sccache'] == 'true') }}
-      msrv: ${{ (github.event_name == 'workflow_call' && inputs['rust-msrv']) || github.event.inputs['rust-msrv'] || '' }}
-      features: ${{ (github.event_name == 'workflow_call' && inputs['rust-features']) || github.event.inputs['rust-features'] || '' }}
-      no-default-features: ${{ (github.event_name == 'workflow_call' && inputs['rust-no-default-features']) || (github.event.inputs['rust-no-default-features'] == 'true') }}
-      workspace-members: ${{ (github.event_name == 'workflow_call' && inputs['rust-workspace-members']) || github.event.inputs['rust-workspace-members'] || '' }}
-      run-cargo-deny: ${{ (github.event_name == 'workflow_call' && inputs['rust-run-cargo-deny']) || (github.event.inputs['rust-run-cargo-deny'] != 'false') }}
-      install-alsa: ${{ (github.event_name == 'workflow_call' && inputs['rust-install-alsa']) || (github.event.inputs['rust-install-alsa'] == 'true') }}
-      install-apt-packages: ${{ (github.event_name == 'workflow_call' && inputs['rust-install-apt-packages']) || github.event.inputs['rust-install-apt-packages'] || '' }}
+      channel: ${{ inputs.rust-channel || 'stable' }}
+      use-nextest: ${{ inputs.rust-use-nextest }}
+      coverage: ${{ inputs.rust-coverage }}
+      use-sccache: ${{ inputs.rust-use-sccache }}
+      msrv: ${{ inputs.rust-msrv || '' }}
+      features: ${{ inputs.rust-features || '' }}
+      no-default-features: ${{ inputs.rust-no-default-features }}
+      workspace-members: ${{ inputs.rust-workspace-members || '' }}
+      run-cargo-deny: ${{ inputs.rust-run-cargo-deny }}
+      install-alsa: ${{ inputs.rust-install-alsa }}
+      install-apt-packages: ${{ inputs.rust-install-apt-packages || '' }}
+      run-audit: ${{ inputs.rust-run-cargo-deny }}  # Use same default as cargo-deny
     secrets: inherit

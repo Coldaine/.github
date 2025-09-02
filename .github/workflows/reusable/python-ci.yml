@@ -32,52 +32,54 @@ jobs:
           if [[ "${{ inputs.pkg-manager }}" == "uv" ]] || [[ -f "uv.lock" ]]; then
             pip install uv
             uv sync --frozen
-          elif [[ -f "poetry.lock" ]]; then
+          elif [[ -f "poetry.lock" ]] || ( [[ -f "pyproject.toml" ]] && grep -q '\[tool\.poetry\]' pyproject.toml ); then
             pip install poetry
             poetry install --no-interaction --no-root
-          elif [[ -f "pdm.lock" ]]; then
+          elif [[ -f "pdm.lock" ]] || ( [[ -f "pyproject.toml" ]] && grep -q '\[tool\.pdm\]' pyproject.toml ); then
             pip install pdm
             pdm install
-          elif compgen -G "requirements*.txt" > /dev/null; then
+          elif compgen -G "requirements*.txt" > /dev/null; then # Shell glob for requirements.txt, requirements-dev.txt etc.
             python -m pip install -r requirements.txt
           else
-            python -m pip install -e .[test] || true
+            # This may fail if a project has no 'test' extra.
+            # It's better to fail and fix the project's setup than to silently pass.
+            python -m pip install -e .[test]
           fi
+      - name: Install CI tools
+        run: python -m pip install ruff mypy bandit[toml] pip-audit pytest pytest-xdist pytest-cov
       - if: inputs.lint
         name: Lint with ruff
         run: |
-          python -m pip install ruff
           ruff check .
           ruff format --check .
+      # It's better to fail the build on type errors than to ignore them.
+      # If this check should be informational, use `continue-on-error: true`
+      # instead of `|| true` for better visibility in the UI.
       - if: inputs.typecheck
         name: Type check with mypy
-        run: |
-          python -m pip install mypy
-          mypy . || true
+        run: mypy .
       - name: Run tests
-        run: |
-          python -m pip install pytest pytest-xdist pytest-cov
-          pytest -n auto --maxfail=1 --cov --cov-report=term-missing
+        run: pytest -n auto --maxfail=1 --cov --cov-report=term-missing
       - if: inputs.coverage
         name: Generate coverage
-        run: coverage xml -o coverage.xml || true
+        run: coverage xml -o coverage.xml
       - if: inputs.coverage && always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
         uses: codecov/codecov-action@4fe8c5f003fae66aa5ebb77cfd3eaf9f93d6a8dc # v4.5.0
         with:
           files: coverage.xml
           flags: python
+      # Security issues should fail the build.
+      # Use `continue-on-error: true` if this is intended to be informational.
       - if: inputs.security-check
         name: Security check
-        run: |
-          python -m pip install bandit[toml]
-          bandit -r . -ll || true
+        run: bandit -r . -ll
       - if: inputs.pip-audit
         name: Dependency vulnerability audit (pip-audit)
         run: |
           python -m pip install pip-audit
           # Try multiple project layouts
           if compgen -G "requirements*.txt" > /dev/null; then
-            pip-audit -r requirements.txt || true
+            pip-audit -r requirements.txt
           else
-            pip-audit || true
+            pip-audit
           fi
