@@ -1,19 +1,60 @@
+---
 name: Rust CI
 on:
   workflow_call:
     inputs:
-      channel:    { required: false, type: string,  default: "stable" }
-      use-nextest:{ required: false, type: boolean, default: true }
-      coverage:   { required: false, type: boolean, default: true }
-      use-sccache:{ required: false, type: boolean, default: false }
-      msrv:       { required: false, type: string,  default: "" }
-      features:   { required: false, type: string,  default: "" }
-      no-default-features: { required: false, type: boolean, default: false }
-      workspace-members: { required: false, type: string, default: "" }
-      run-cargo-deny: { required: false, type: boolean, default: true }
-      install-alsa: { required: false, type: boolean, default: false }
-      install-apt-packages: { required: false, type: string, default: "" }
-      run-audit: { required: false, type: boolean, default: true }
+      channel:
+        required: false
+        type: string
+        default: "stable"
+      use-nextest:
+        required: false
+        type: boolean
+        default: true
+      coverage:
+        required: false
+        type: boolean
+        default: true
+      use-sccache:
+        required: false
+        type: boolean
+        default: false
+      msrv:
+        required: false
+        type: string
+        default: ""
+      features:
+        required: false
+        type: string
+        default: ""
+      no-default-features:
+        required: false
+        type: boolean
+        default: false
+      workspace-members:
+        required: false
+        type: string
+        default: ""
+      run-cargo-deny:
+        required: false
+        type: boolean
+        default: true
+      install-alsa:
+        required: false
+        type: boolean
+        default: false
+      install-apt-packages:
+        required: false
+        type: string
+        default: ""
+      crate-system-deps:
+        required: false
+        type: string
+        default: "{}"
+      run-audit:
+        required: false
+        type: boolean
+        default: true
 permissions:
   contents: read
 env:
@@ -50,7 +91,7 @@ jobs:
     needs: detect-members
     runs-on: ubuntu-latest
     strategy:
-  matrix: ${{ fromJSON(needs.detect-members.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.detect-members.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.1.7
         with:
@@ -68,6 +109,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - if: inputs.install-apt-packages != ''
         run: sudo apt-get update && sudo apt-get install -y ${{ inputs.install-apt-packages }}
+      - name: Install crate-specific apt packages
+        if: inputs.crate-system-deps != '{}'
+        run: |
+          PACKAGES=$(echo '${{ inputs.crate-system-deps }}' | jq -r '."${{ matrix.member }}" // empty')
+          if [ -n "$PACKAGES" ]; then
+            sudo apt-get update && sudo apt-get install -y $PACKAGES
+          fi
       - if: inputs.use-nextest
         uses: taiki-e/install-action@5ff18d7fb42b9cb96e9b08bd87f965bb411b4daf # v2.44.45
         with:
@@ -130,6 +178,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - if: inputs.install-apt-packages != ''
         run: sudo apt-get update && sudo apt-get install -y ${{ inputs.install-apt-packages }}
+      - name: Install crate-specific apt packages (MSRV)
+        if: inputs.crate-system-deps != '{}'
+        run: |
+          PACKAGES=$(echo '${{ inputs.crate-system-deps }}' | jq -r '.["."] // empty')
+          if [ -n "$PACKAGES" ]; then
+            sudo apt-get update && sudo apt-get install -y $PACKAGES
+          fi
       - name: Build with MSRV
         run: cargo build --workspace --locked --no-default-features
       - name: Test with MSRV

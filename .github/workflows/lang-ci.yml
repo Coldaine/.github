@@ -1,4 +1,4 @@
-
+---
 name: Lang CI (router)
 
 on:
@@ -74,26 +74,67 @@ on:
         description: Additional apt packages to install
         type: string
         default: ""
+      crate_system_deps:
+        description: JSON object mapping crate names to apt packages
+        type: string
+        default: "{}"
 
 workflow_call:
   inputs:
-    python-versions: { type: string, default: '["3.10","3.11","3.12"]' }
-    pkg-manager: { type: string, default: auto }
-    python-lint: { type: boolean, default: true }
-    python-typecheck: { type: boolean, default: true }
-    python-coverage: { type: boolean, default: true }
-    python-security-check: { type: boolean, default: true }
-    rust-channel: { type: string, default: stable }
-    rust-use-nextest: { type: boolean, default: true }
-    rust-coverage: { type: boolean, default: true }
-    rust-use-sccache: { type: boolean, default: false }
-    rust-msrv: { type: string, default: "" }
-    rust-features: { type: string, default: "" }
-    rust-no-default-features: { type: boolean, default: false }
-    rust-workspace-members: { type: string, default: "" }
-    rust-run-cargo-deny: { type: boolean, default: true }
-    rust-install-alsa: { type: boolean, default: false }
-    rust-install-apt-packages: { type: string, default: "" }
+    python-versions:
+      type: string
+      default: '["3.10","3.11","3.12"]'
+    pkg-manager:
+      type: string
+      default: auto
+    python-lint:
+      type: boolean
+      default: true
+    python-typecheck:
+      type: boolean
+      default: true
+    python-coverage:
+      type: boolean
+      default: true
+    python-security-check:
+      type: boolean
+      default: true
+    rust-channel:
+      type: string
+      default: stable
+    rust-use-nextest:
+      type: boolean
+      default: true
+    rust-coverage:
+      type: boolean
+      default: true
+    rust-use-sccache:
+      type: boolean
+      default: false
+    rust-msrv:
+      type: string
+      default: ""
+    rust-features:
+      type: string
+      default: ""
+    rust-no-default-features:
+      type: boolean
+      default: false
+    rust-workspace-members:
+      type: string
+      default: ""
+    rust-run-cargo-deny:
+      type: boolean
+      default: true
+    rust-install-alsa:
+      type: boolean
+      default: false
+    rust-install-apt-packages:
+      type: string
+      default: ""
+    crate_system_deps:
+      type: string
+      default: "{}"
 
 permissions:
   contents: read
@@ -163,5 +204,6 @@ jobs:
       run-cargo-deny: ${{ inputs.rust-run-cargo-deny }}
       install-alsa: ${{ inputs.rust-install-alsa }}
       install-apt-packages: ${{ inputs.rust-install-apt-packages || '' }}
+      crate-system-deps: ${{ inputs.crate_system_deps || '{}' }}
       run-audit: ${{ inputs.rust-run-cargo-deny }}  # Use same default as cargo-deny
     secrets: inherit
